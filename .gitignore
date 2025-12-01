@@ -36,11 +36,6 @@ ScaffoldingReadMe.txt
 # NuGet Symbol Packages
 *.snupkg
 
-# Others
-~$*
-*~
-CodeCoverage/
-
 # MSBuild Binary and Structured Log
 *.binlog
 
@@ -52,3 +47,11 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# Others
+~$*
+*~
+CodeCoverage/
+appsettings.Development.json
+db/postgres-data/
+.DS_Store

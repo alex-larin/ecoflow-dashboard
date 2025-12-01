@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: ecoflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ingestor
+      POSTGRES_PASSWORD: ingestor
+      POSTGRES_DB: postgres
+      TARGET_DB_NAME: ecoflow_raw_events
+      TZ: UTC
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./db/postgres-data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ingestor -d ecoflow_raw_events"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mqtt-ingestor:
+    build:
+      context: .
+      dockerfile: src/Ecoflow.MqttIngestor/Dockerfile
+    image: ecoflow-ingestor:latest
+    container_name: ecoflow-mqtt-ingestor
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      Database__ConnectionString: Host=postgres;Port=5432;Username=ingestor;Password=ingestor;Database=ecoflow_raw_events;Pooling=true
+      # Example placeholders for EcoFlow credentials; override via environment variables or appsettings files
+      Ecoflow__AccessKey: change-me
+      Ecoflow__SecretKey: change-me
+    command: ["./Ecoflow.MqttIngestor"]
