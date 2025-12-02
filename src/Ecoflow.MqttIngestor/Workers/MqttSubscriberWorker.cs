@@ -1,4 +1,6 @@
 using System.Buffers;
+using System.Text;
+using System.Text.Json;
 using System.Threading.Channels;
 using Ecoflow.MqttIngestor.Messaging;
 using Ecoflow.MqttIngestor.Services;
@@ -13,6 +15,17 @@ public sealed class MqttSubscriberWorker : BackgroundService
 {
     private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan HealthCheckDelay = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMinutes(1);
+    private const string HeartbeatProtocolVersion = "1.0";
+    private const string HeartbeatOperateType = "TCP";
+    private const string HeartbeatSource = "EcoflowDashboard";
+    private const int HeartbeatCmdSet = 32;
+    private const int HeartbeatCmdId = 39;
+    private const int HeartbeatLcdTimeSeconds = 60;
+    private static readonly JsonSerializerOptions HeartbeatSerializerOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
 
     private readonly IMqttClient _mqttClient;
     private readonly MqttClientFactory _mqttFactory;
@@ -23,6 +36,7 @@ public sealed class MqttSubscriberWorker : BackgroundService
     private IReadOnlyList<EcoflowDevice> _devices = Array.Empty<EcoflowDevice>();
     private CertificationData? _certification;
     private int _accountInventoryVersion;
+    private DateTimeOffset _nextHeartbeatUtc = DateTimeOffset.MinValue;
 
     public MqttSubscriberWorker(
         IMqttClient mqttClient,
@@ -71,6 +85,11 @@ public sealed class MqttSubscriberWorker : BackgroundService
                 }
             }
 
+            if (_mqttClient.IsConnected)
+            {
+                await TrySendHeartbeatAsync(stoppingToken);
+            }
+
             await Task.Delay(HealthCheckDelay, stoppingToken);
         }
     }
@@ -108,13 +127,13 @@ public sealed class MqttSubscriberWorker : BackgroundService
             foreach (var device in _devices)
             {
                 var quotaTopic = $"/open/{certification.CertificateAccount}/{device.SerialNumber}/quota";
-                var statusTopic = $"/open/{certification.CertificateAccount}/{device.SerialNumber}/status";
+                var setReplyTopic = $"/open/{certification.CertificateAccount}/{device.SerialNumber}/set_reply";
 
                 subscribeBuilder.WithTopicFilter(filter => filter
                     .WithTopic(quotaTopic)
                     .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce));
                 subscribeBuilder.WithTopicFilter(filter => filter
-                    .WithTopic(statusTopic)
+                    .WithTopic(setReplyTopic)
                     .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce));
                 addedTopic = true;
             }
@@ -145,6 +164,8 @@ public sealed class MqttSubscriberWorker : BackgroundService
         var payload = args.ApplicationMessage.Payload;
         var buffer = payload.IsEmpty ? Array.Empty<byte>() : CopyToByteArray(payload);
         var envelope = new MqttEnvelope(args.ApplicationMessage.Topic, buffer, DateTimeOffset.UtcNow);
+
+        LogHeartbeatResponseIfApplicable(args.ApplicationMessage.Topic, buffer);
 
         return _channelWriter.WriteAsync(envelope, _executionToken).AsTask();
     }
@@ -180,8 +201,8 @@ public sealed class MqttSubscriberWorker : BackgroundService
         var builder = _mqttFactory.CreateClientOptionsBuilder()
             .WithProtocolVersion(MqttProtocolVersion.V500)
             .WithTcpServer(certification.Url, port)
-            .WithCleanSession()
-            .WithKeepAlivePeriod(TimeSpan.FromSeconds(20))
+            .WithCleanStart(false)
+            .WithKeepAlivePeriod(TimeSpan.FromSeconds(60))
             .WithCredentials(certification.CertificateAccount, certification.CertificatePassword)
             .WithTlsOptions(options => options.WithCertificateValidationHandler(_ => true));
 
@@ -209,6 +230,99 @@ public sealed class MqttSubscriberWorker : BackgroundService
     {
         return _certification ?? throw new InvalidOperationException("Certification data is not available.");
     }
+
+    private async Task TrySendHeartbeatAsync(CancellationToken cancellationToken)
+    {
+        if (DateTimeOffset.UtcNow < _nextHeartbeatUtc)
+        {
+            return;
+        }
+
+        try
+        {
+            if (await SendHeartbeatAsync(cancellationToken))
+            {
+                _nextHeartbeatUtc = DateTimeOffset.UtcNow.Add(HeartbeatInterval);
+            }
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(exception, "Failed to send EcoFlow MQTT heartbeat.");
+            _nextHeartbeatUtc = DateTimeOffset.UtcNow.Add(HeartbeatInterval);
+        }
+    }
+
+    private async Task<bool> SendHeartbeatAsync(CancellationToken cancellationToken)
+    {
+        if (!_mqttClient.IsConnected)
+        {
+            return false;
+        }
+
+        var certification = _certification;
+        if (certification is null)
+        {
+            return false;
+        }
+
+        if (_devices.Count == 0)
+        {
+            return false;
+        }
+
+        var heartbeatSent = false;
+        foreach (var device in _devices)
+        {
+            var topic = $"/open/{certification.CertificateAccount}/{device.SerialNumber}/set";
+            var messageId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var payload = BuildHeartbeatPayload(messageId);
+
+            _logger.LogInformation(
+                "Sending EcoFlow MQTT heartbeat set request {MessageId} for device {DeviceSerial} on topic {Topic}: {Payload}",
+                messageId,
+                device.SerialNumber,
+                topic,
+                payload);
+
+            var applicationMessage = new MqttApplicationMessageBuilder()
+                .WithTopic(topic)
+                .WithPayload(payload)
+                .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce)
+                .Build();
+
+            await _mqttClient.PublishAsync(applicationMessage, cancellationToken);
+            heartbeatSent = true;
+        }
+
+        return heartbeatSent;
+    }
+
+    private static string BuildHeartbeatPayload(long messageId)
+    {
+        var request = new HeartbeatRequest(
+            messageId,
+            HeartbeatProtocolVersion,
+            HeartbeatOperateType,
+            HeartbeatSource,
+            new HeartbeatParams(HeartbeatCmdSet, HeartbeatCmdId, HeartbeatLcdTimeSeconds));
+
+        return JsonSerializer.Serialize(request, HeartbeatSerializerOptions);
+    }
+
+    private void LogHeartbeatResponseIfApplicable(string topic, byte[] payload)
+    {
+        if (!topic.EndsWith("/set_reply", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var payloadText = payload.Length == 0 ? "<empty>" : Encoding.UTF8.GetString(payload);
+        _logger.LogInformation("Received EcoFlow MQTT heartbeat set response on {Topic}: {Payload}", topic, payloadText);
+    }
+
+    private sealed record HeartbeatRequest(long Id, string Version, string OperateType, string From, HeartbeatParams Params);
+
+    private sealed record HeartbeatParams(int CmdSet, int Id, int LcdTime);
 
     private async Task UpdateInventorySnapshotAsync(bool waitForNextUpdate, CancellationToken cancellationToken)
     {
