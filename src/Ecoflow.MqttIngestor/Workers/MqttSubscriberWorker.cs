@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -7,6 +8,7 @@ using Ecoflow.MqttIngestor.Services;
 using Ecoflow.MqttIngestor.Services.Models;
 using MQTTnet;
 using MQTTnet.Formatter;
+using MQTTnet.Packets;
 using MQTTnet.Protocol;
 
 namespace Ecoflow.MqttIngestor.Workers;
@@ -32,6 +34,7 @@ public sealed class MqttSubscriberWorker : BackgroundService
     private readonly ChannelWriter<MqttEnvelope> _channelWriter;
     private readonly IAccountInventory _accountInventory;
     private readonly ILogger<MqttSubscriberWorker> _logger;
+    private readonly string _clientId = $"EcoflowDashboard-{Guid.NewGuid():N}";
     private CancellationToken _executionToken;
     private IReadOnlyList<EcoflowDevice> _devices = Array.Empty<EcoflowDevice>();
     private CertificationData? _certification;
@@ -170,22 +173,91 @@ public sealed class MqttSubscriberWorker : BackgroundService
         return _channelWriter.WriteAsync(envelope, _executionToken).AsTask();
     }
 
-    private Task OnConnectedAsync(MqttClientConnectedEventArgs _)
+    private Task OnConnectedAsync(MqttClientConnectedEventArgs args)
     {
         var certification = GetCertificationOrThrow();
-        _logger.LogInformation("Connected to MQTT broker {Host}:{Port}", certification.Url, certification.Port);
+        var connectResult = args.ConnectResult;
+        var clientId = _mqttClient.Options?.ClientId ?? "<unknown>";
+
+        _logger.LogInformation(
+            "Connected to MQTT broker {Host}:{Port} as {ClientId}. ResultCode={ResultCode}, SessionPresent={SessionPresent}, AssignedClientIdentifier={AssignedClientIdentifier}",
+            certification.Url,
+            certification.Port,
+            clientId,
+            connectResult.ResultCode,
+            connectResult.IsSessionPresent,
+            connectResult.AssignedClientIdentifier ?? "<none>");
+
+        _logger.LogInformation(
+            "MQTT broker capabilities: KeepAlive={ServerKeepAlive}s, MaxPacket={MaximumPacketSize}, ReceiveMax={ReceiveMaximum}, TopicAliasMax={TopicAliasMaximum}, MaxQoS={MaximumQoS}, RetainAvailable={RetainAvailable}, Wildcards={WildcardSubscriptionAvailable}, SharedSubs={SharedSubscriptionAvailable}, SubscriptionIds={SubscriptionIdentifiersAvailable}",
+            connectResult.ServerKeepAlive,
+            connectResult.MaximumPacketSize,
+            connectResult.ReceiveMaximum,
+            connectResult.TopicAliasMaximum,
+            connectResult.MaximumQoS,
+            connectResult.RetainAvailable,
+            connectResult.WildcardSubscriptionAvailable,
+            connectResult.SharedSubscriptionAvailable,
+            connectResult.SubscriptionIdentifiersAvailable);
+
+        if (!string.IsNullOrWhiteSpace(connectResult.ResponseInformation) ||
+            !string.IsNullOrWhiteSpace(connectResult.ServerReference) ||
+            !string.IsNullOrWhiteSpace(connectResult.ReasonString))
+        {
+            _logger.LogInformation(
+                "MQTT broker greeting: ReasonString={ReasonString}, ResponseInformation={ResponseInformation}, ServerReference={ServerReference}",
+                connectResult.ReasonString ?? "<none>",
+                connectResult.ResponseInformation ?? "<none>",
+                connectResult.ServerReference ?? "<none>");
+        }
+
+        if (connectResult.UserProperties?.Count > 0)
+        {
+            _logger.LogInformation("MQTT CONNACK user properties: {UserProperties}", FormatUserProperties(connectResult.UserProperties));
+        }
+
         return Task.CompletedTask;
     }
 
     private Task OnDisconnectedAsync(MqttClientDisconnectedEventArgs args)
     {
+        var connectResult = args.ConnectResult;
+        var logMessage = "MQTT connection lost. Will retry in {Delay}s | Reason={Reason} | ReasonString={ReasonString} | ResultCode={ResultCode} | WasConnected={ClientWasConnected}";
+
         if (args.Exception is not null)
         {
-            _logger.LogWarning(args.Exception, "MQTT connection lost. Reconnecting in {Delay}s", ReconnectDelay.TotalSeconds);
+            _logger.LogWarning(
+                args.Exception,
+                logMessage,
+                ReconnectDelay.TotalSeconds,
+                args.Reason,
+                args.ReasonString ?? "<none>",
+                connectResult?.ResultCode,
+                args.ClientWasConnected);
         }
         else
         {
-            _logger.LogWarning("MQTT connection lost. Reconnecting in {Delay}s", ReconnectDelay.TotalSeconds);
+            _logger.LogWarning(
+                logMessage,
+                ReconnectDelay.TotalSeconds,
+                args.Reason,
+                args.ReasonString ?? "<none>",
+                connectResult?.ResultCode,
+                args.ClientWasConnected);
+        }
+
+        if (args.UserProperties?.Count > 0)
+        {
+            _logger.LogInformation("MQTT DISCONNECT user properties: {UserProperties}", FormatUserProperties(args.UserProperties));
+        }
+
+        if (!string.IsNullOrWhiteSpace(connectResult?.ReasonString) ||
+            !string.IsNullOrWhiteSpace(connectResult?.ServerReference))
+        {
+            _logger.LogDebug(
+                "Last CONNACK context: ReasonString={ReasonString}, ServerReference={ServerReference}",
+                connectResult?.ReasonString ?? "<none>",
+                connectResult?.ServerReference ?? "<none>");
         }
 
         return Task.CompletedTask;
@@ -201,12 +273,15 @@ public sealed class MqttSubscriberWorker : BackgroundService
         var builder = _mqttFactory.CreateClientOptionsBuilder()
             .WithProtocolVersion(MqttProtocolVersion.V500)
             .WithTcpServer(certification.Url, port)
-            .WithCleanStart(false)
+            .WithCleanStart(true)
+            .WithClientId(_clientId)
             .WithKeepAlivePeriod(TimeSpan.FromSeconds(60))
             .WithCredentials(certification.CertificateAccount, certification.CertificatePassword)
             .WithTlsOptions(options => options.WithCertificateValidationHandler(_ => true));
 
-        return builder.Build();
+        var clientOptions = builder.Build();
+        LogClientOptions(clientOptions, certification);
+        return clientOptions;
     }
 
     private static byte[] CopyToByteArray(ReadOnlySequence<byte> payload)
@@ -323,6 +398,40 @@ public sealed class MqttSubscriberWorker : BackgroundService
     private sealed record HeartbeatRequest(long Id, string Version, string OperateType, string From, HeartbeatParams Params);
 
     private sealed record HeartbeatParams(int CmdSet, int Id, int LcdTime);
+
+    private void LogClientOptions(MqttClientOptions options, CertificationData certification)
+    {
+        _logger.LogInformation(
+            "Configuring MQTT client for {Host}:{Port} | ClientId={ClientId} | CleanSession={CleanSession} | KeepAlive={KeepAliveSeconds}s | SessionExpiry={SessionExpiryInterval} | Protocol={ProtocolVersion} | AllowFragmentation={AllowFragmentation} | RequestProblemInfo={RequestProblemInformation} | RequestResponseInfo={RequestResponseInformation} | HasPassword={HasPassword}",
+            certification.Url,
+            certification.Port,
+            options.ClientId,
+            options.CleanSession,
+            (int)options.KeepAlivePeriod.TotalSeconds,
+            options.SessionExpiryInterval,
+            options.ProtocolVersion,
+            options.AllowPacketFragmentation,
+            options.RequestProblemInformation,
+            options.RequestResponseInformation,
+            !string.IsNullOrEmpty(certification.CertificatePassword));
+
+        _logger.LogDebug(
+            "MQTT client flow control: ReceiveMaximum={ReceiveMaximum}, MaximumPacketSize={MaximumPacketSize}, TopicAliasMaximum={TopicAliasMaximum}, RequestProblemInfo={RequestProblemInformation}",
+            options.ReceiveMaximum,
+            options.MaximumPacketSize,
+            options.TopicAliasMaximum,
+            options.RequestProblemInformation);
+    }
+
+    private static string FormatUserProperties(IReadOnlyCollection<MqttUserProperty>? properties)
+    {
+        if (properties is null || properties.Count == 0)
+        {
+            return "<none>";
+        }
+
+        return string.Join(", ", properties.Select(p => $"{p.Name}={p.Value}"));
+    }
 
     private async Task UpdateInventorySnapshotAsync(bool waitForNextUpdate, CancellationToken cancellationToken)
     {

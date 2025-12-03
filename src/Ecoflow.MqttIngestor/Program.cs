@@ -7,6 +7,8 @@ using Ecoflow.MqttIngestor.Services;
 using Ecoflow.MqttIngestor.Workers;
 using Microsoft.Extensions.Options;
 using MQTTnet;
+using MQTTnet.Diagnostics;
+using MQTTnet.Diagnostics.Logger;
 using Npgsql;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -28,7 +30,32 @@ builder.Services.AddSingleton(sp =>
     return dataSourceBuilder.Build();
 });
 
-builder.Services.AddSingleton<MqttClientFactory>();
+builder.Services.AddSingleton(sp =>
+{
+    var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+    var mqttLogger = new MqttNetEventLogger();
+    mqttLogger.LogMessagePublished += (_, args) =>
+    {
+        var log = args.LogMessage;
+        if (ShouldSuppressMqttLog(log))
+        {
+            return;
+        }
+
+        var sourceLogger = loggerFactory.CreateLogger($"MQTTnet.{log.Source}");
+        var level = MapLogLevel(log.Level);
+        sourceLogger.Log(
+            level,
+            log.Exception,
+            "[{Source}] (Thread {ThreadId}) {Message}",
+            log.Source,
+            log.ThreadId,
+            log.Message);
+    };
+
+    return mqttLogger;
+});
+builder.Services.AddSingleton(sp => new MqttClientFactory(sp.GetRequiredService<MqttNetEventLogger>()));
 builder.Services.AddSingleton<IMqttClient>(sp => sp.GetRequiredService<MqttClientFactory>().CreateMqttClient());
 
 builder.Services.AddSingleton(Channel.CreateUnbounded<MqttEnvelope>(new UnboundedChannelOptions
@@ -51,3 +78,20 @@ builder.Services.AddHostedService<MessageProcessingWorker>();
 
 var host = builder.Build();
 host.Run();
+
+static bool ShouldSuppressMqttLog(MqttNetLogMessage log)
+{
+    return log.Level == MqttNetLogLevel.Verbose && string.Equals(log.Source, "MqttChannelAdapter", StringComparison.OrdinalIgnoreCase);
+}
+
+static LogLevel MapLogLevel(MqttNetLogLevel level)
+{
+    return level switch
+    {
+        MqttNetLogLevel.Error => LogLevel.Error,
+        MqttNetLogLevel.Warning => LogLevel.Warning,
+        MqttNetLogLevel.Info => LogLevel.Information,
+        MqttNetLogLevel.Verbose => LogLevel.Debug,
+        _ => LogLevel.Debug
+    };
+}
