@@ -52,6 +52,6 @@ nunit-*.xml
 ~$*
 *~
 CodeCoverage/
-appsettings.Development.json
+appsettings.*.json
 db/postgres-data/
 .DS_Store
