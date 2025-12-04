@@ -20,10 +20,10 @@ public sealed class MqttSubscriberWorker : BackgroundService
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMinutes(1);
     private const string HeartbeatProtocolVersion = "1.0";
     private const string HeartbeatOperateType = "TCP";
-    private const string HeartbeatSource = "EcoflowDashboard";
+    private const string HeartbeatSource = "Web";
     private const int HeartbeatCmdSet = 32;
-    private const int HeartbeatCmdId = 39;
-    private const int HeartbeatLcdTimeSeconds = 60;
+    private const int HeartbeatCmdId = 38;
+    private const int HeartbeatEnabledFlag = 1;
     private static readonly JsonSerializerOptions HeartbeatSerializerOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
@@ -380,7 +380,7 @@ public sealed class MqttSubscriberWorker : BackgroundService
             HeartbeatProtocolVersion,
             HeartbeatOperateType,
             HeartbeatSource,
-            new HeartbeatParams(HeartbeatCmdSet, HeartbeatCmdId, HeartbeatLcdTimeSeconds));
+            new HeartbeatParams(HeartbeatCmdSet, HeartbeatCmdId, HeartbeatEnabledFlag));
 
         return JsonSerializer.Serialize(request, HeartbeatSerializerOptions);
     }
@@ -398,7 +398,7 @@ public sealed class MqttSubscriberWorker : BackgroundService
 
     private sealed record HeartbeatRequest(long Id, string Version, string OperateType, string From, HeartbeatParams Params);
 
-    private sealed record HeartbeatParams(int CmdSet, int Id, int LcdTime);
+    private sealed record HeartbeatParams(int CmdSet, int Id, int Enabled);
 
     private void LogClientOptions(MqttClientOptions options, CertificationData certification)
     {
