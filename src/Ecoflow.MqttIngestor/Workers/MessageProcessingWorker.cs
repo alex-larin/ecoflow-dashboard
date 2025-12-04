@@ -37,8 +37,8 @@ public sealed class MessageProcessingWorker : BackgroundService
 
         await foreach (var envelope in _channelReader.ReadAllAsync(stoppingToken))
         {
-            var p = System.Text.Encoding.UTF8.GetString(envelope.Payload);
-            _logger.LogInformation("Received message from {Topic}: {Payload}", envelope.Topic, p);
+            // var p = System.Text.Encoding.UTF8.GetString(envelope.Payload);
+            // _logger.LogInformation("Received message from {Topic}: {Payload}", envelope.Topic, p);
 
             if (!IsQuotaTopic(envelope.Topic))
             {

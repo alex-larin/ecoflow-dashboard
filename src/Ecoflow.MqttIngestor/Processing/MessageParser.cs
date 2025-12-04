@@ -10,6 +10,15 @@ public sealed class MessageParser(ILogger<MessageParser> logger) : IMessageParse
 {
     // Identifier used when payload combines data from several modules.
     private const string AggregatedModuleName = "ALL";
+    private static readonly Dictionary<string, string> ModuleMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["ems"] = "EMS",
+        ["bmsMaster"] = "BMS",
+        ["kit"] = "KIT",
+        ["pd"] = "PD",
+        ["inv"] = "INV",
+        ["mppt"] = "MPPT"
+    };
 
     public bool TryParse(MqttEnvelope envelope, out EcoflowEvent? ecoflowEvent, out string? failureReason)
     {
@@ -40,7 +49,7 @@ public sealed class MessageParser(ILogger<MessageParser> logger) : IMessageParse
                 }
 
                 var propertyName = utf8Reader.GetString();
-                bool isRootProperty = utf8Reader.CurrentDepth == 0;
+                bool isRootProperty = utf8Reader.CurrentDepth == 1;
                 bool isParams = propertyName?.Equals("params", StringComparison.OrdinalIgnoreCase) == true;
 
                 if (isRootProperty && !isParams)
@@ -138,6 +147,16 @@ public sealed class MessageParser(ILogger<MessageParser> logger) : IMessageParse
         }
 
         var candidate = propertyName[..separatorIndex];
+        return NormalizeModuleName(candidate);
+    }
+
+    private static string NormalizeModuleName(string candidate)
+    {
+        if (ModuleMap.TryGetValue(candidate, out var mapped))
+        {
+            return mapped;
+        }
+
         return candidate.ToUpperInvariant();
     }
 

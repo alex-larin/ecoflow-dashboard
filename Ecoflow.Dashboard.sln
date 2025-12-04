@@ -4,6 +4,8 @@ VisualStudioVersion = 17.8.34330.188
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ecoflow.MqttIngestor", "src\Ecoflow.MqttIngestor\Ecoflow.MqttIngestor.csproj", "{17567FEA-A320-4ED1-A469-CDEDA9056999}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ecoflow.MqttIngestor.Tests", "tests\Ecoflow.MqttIngestor.Tests\Ecoflow.MqttIngestor.Tests.csproj", "{5D4C79F1-7112-4B97-8BDD-21A77E73BB64}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -14,6 +16,10 @@ Global
 		{17567FEA-A320-4ED1-A469-CDEDA9056999}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{17567FEA-A320-4ED1-A469-CDEDA9056999}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{17567FEA-A320-4ED1-A469-CDEDA9056999}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5D4C79F1-7112-4B97-8BDD-21A77E73BB64}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5D4C79F1-7112-4B97-8BDD-21A77E73BB64}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5D4C79F1-7112-4B97-8BDD-21A77E73BB64}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5D4C79F1-7112-4B97-8BDD-21A77E73BB64}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
