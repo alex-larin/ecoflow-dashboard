@@ -1,9 +1,7 @@
-using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
 using Ecoflow.MqttIngestor.Messaging;
 using Ecoflow.MqttIngestor.Persistence;
-using Microsoft.Extensions.Logging;
 
 namespace Ecoflow.MqttIngestor.Processing;
 
@@ -34,7 +32,6 @@ public sealed class MessageParser(ILogger<MessageParser> logger) : IMessageParse
 
         string deviceId = ExtractDeviceId(envelope.Topic);
         string? module = null;
-        long? deviceTimestamp = null;
 
         try
         {
@@ -46,22 +43,9 @@ public sealed class MessageParser(ILogger<MessageParser> logger) : IMessageParse
                 }
 
                 var propertyName = utf8Reader.GetString();
-                if (propertyName is null)
+                if (propertyName?.Equals("params", StringComparison.OrdinalIgnoreCase) == true)
                 {
-                    continue;
-                }
-
-                if (propertyName.Equals("params", StringComparison.OrdinalIgnoreCase))
-                {
-                    (module, deviceTimestamp) = ExtractFromParams(ref utf8Reader, module, deviceTimestamp);
-                }
-                else if (propertyName.Equals("timestamp", StringComparison.OrdinalIgnoreCase) && deviceTimestamp is null)
-                {
-                    utf8Reader.Read();
-                    if (utf8Reader.TokenType == JsonTokenType.Number && utf8Reader.TryGetInt64(out var ts))
-                    {
-                        deviceTimestamp = ts;
-                    }
+                    module = ExtractModuleFromParams(ref utf8Reader, module);
                 }
                 else
                 {
@@ -82,31 +66,22 @@ public sealed class MessageParser(ILogger<MessageParser> logger) : IMessageParse
             return false;
         }
 
-        if (deviceTimestamp is null)
-        {
-            failureReason = "Missing device timestamp";
-            return false;
-        }
-
-        var deviceTs = ConvertDeviceTimestamp(deviceTimestamp.Value);
         var payload = Encoding.UTF8.GetString(envelope.Payload);
-        ecoflowEvent = new EcoflowEvent(deviceId, module, deviceTs, envelope.ReceivedAt, payload);
+        ecoflowEvent = new EcoflowEvent(deviceId, module, envelope.ReceivedAt, payload);
         return true;
     }
 
-    private static (string? module, long? deviceTimestamp) ExtractFromParams(
+    private static string? ExtractModuleFromParams(
         ref Utf8JsonReader reader,
-        string? currentModule,
-        long? deviceTimestamp)
+        string? currentModule)
     {
         if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
         {
             reader.Skip();
-            return (currentModule, deviceTimestamp);
+            return currentModule;
         }
 
         string? module = currentModule;
-        long? timestamp = deviceTimestamp;
 
         while (reader.Read())
         {
@@ -138,7 +113,7 @@ public sealed class MessageParser(ILogger<MessageParser> logger) : IMessageParse
             reader.Skip();
         }
 
-        return (module, timestamp);
+        return module;
     }
 
     private static string NormalizeModuleName(string candidate)
@@ -149,20 +124,6 @@ public sealed class MessageParser(ILogger<MessageParser> logger) : IMessageParse
         }
 
         return candidate.ToUpperInvariant();
-    }
-
-    private static DateTimeOffset ConvertDeviceTimestamp(long timestamp)
-    {
-        try
-        {
-            return timestamp > 1_000_000_000_000
-                ? DateTimeOffset.FromUnixTimeMilliseconds(timestamp)
-                : DateTimeOffset.FromUnixTimeSeconds(timestamp);
-        }
-        catch (ArgumentOutOfRangeException)
-        {
-            return DateTimeOffset.UtcNow;
-        }
     }
 
     private static string ExtractDeviceId(string topic)

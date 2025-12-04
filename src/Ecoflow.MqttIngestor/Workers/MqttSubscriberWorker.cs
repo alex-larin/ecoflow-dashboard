@@ -34,7 +34,7 @@ public sealed class MqttSubscriberWorker : BackgroundService
     private readonly ChannelWriter<MqttEnvelope> _channelWriter;
     private readonly IAccountInventory _accountInventory;
     private readonly ILogger<MqttSubscriberWorker> _logger;
-    private readonly string _clientId = $"EcoflowDashboard-{Guid.NewGuid():N}";
+    private readonly string _clientId = $"Web_DCEBZ8ZF2220374";
     private CancellationToken _executionToken;
     private IReadOnlyList<EcoflowDevice> _devices = Array.Empty<EcoflowDevice>();
     private CertificationData? _certification;

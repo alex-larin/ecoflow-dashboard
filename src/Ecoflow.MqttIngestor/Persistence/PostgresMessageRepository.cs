@@ -42,7 +42,6 @@ public sealed class PostgresMessageRepository : IMessageRepository
                 id BIGSERIAL PRIMARY KEY,
                 device_id TEXT NOT NULL,
                 module TEXT NOT NULL,
-                device_ts TIMESTAMPTZ NOT NULL,
                 ingest_ts TIMESTAMPTZ NOT NULL,
                 payload JSONB NOT NULL
             );
@@ -52,14 +51,13 @@ public sealed class PostgresMessageRepository : IMessageRepository
         {
             await tableCmd.ExecuteNonQueryAsync(cancellationToken);
         }
-
-        var indexDeviceTs = $"CREATE INDEX IF NOT EXISTS idx_{_options.TableName}_device_ts ON {QualifiedTableName} (device_id, device_ts);";
-        await using (var indexCmd = new NpgsqlCommand(indexDeviceTs, connection))
+        var indexIngestTs = $"CREATE INDEX IF NOT EXISTS idx_{_options.TableName}_ingest_ts ON {QualifiedTableName} (device_id, ingest_ts);";
+        await using (var indexCmd = new NpgsqlCommand(indexIngestTs, connection))
         {
             await indexCmd.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        var indexModule = $"CREATE INDEX IF NOT EXISTS idx_{_options.TableName}_module_device_ts ON {QualifiedTableName} (device_id, module, device_ts);";
+        var indexModule = $"CREATE INDEX IF NOT EXISTS idx_{_options.TableName}_module_ingest_ts ON {QualifiedTableName} (device_id, module, ingest_ts);";
         await using (var moduleIdxCmd = new NpgsqlCommand(indexModule, connection))
         {
             await moduleIdxCmd.ExecuteNonQueryAsync(cancellationToken);
@@ -69,15 +67,14 @@ public sealed class PostgresMessageRepository : IMessageRepository
     public async Task StoreAsync(EcoflowEvent ecoflowEvent, CancellationToken cancellationToken)
     {
         var sql = $@"
-            INSERT INTO {QualifiedTableName} (device_id, module, device_ts, ingest_ts, payload)
-            VALUES (@device_id, @module, @device_ts, @ingest_ts, @payload);
+            INSERT INTO {QualifiedTableName} (device_id, module, ingest_ts, payload)
+            VALUES (@device_id, @module, @ingest_ts, @payload);
         ";
 
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var command = new NpgsqlCommand(sql, connection);
         command.Parameters.Add("device_id", NpgsqlDbType.Text).Value = ecoflowEvent.DeviceId;
         command.Parameters.Add("module", NpgsqlDbType.Text).Value = ecoflowEvent.Module;
-        command.Parameters.Add("device_ts", NpgsqlDbType.TimestampTz).Value = ecoflowEvent.DeviceTimestamp.UtcDateTime;
         command.Parameters.Add("ingest_ts", NpgsqlDbType.TimestampTz).Value = ecoflowEvent.IngestTimestamp.UtcDateTime;
         command.Parameters.Add("payload", NpgsqlDbType.Jsonb).Value = ecoflowEvent.Payload;
 
