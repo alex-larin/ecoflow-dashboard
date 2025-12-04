@@ -34,7 +34,6 @@ public sealed class MqttSubscriberWorker : BackgroundService
     private readonly ChannelWriter<MqttEnvelope> _channelWriter;
     private readonly IAccountInventory _accountInventory;
     private readonly ILogger<MqttSubscriberWorker> _logger;
-    private readonly string _clientId = $"Web_DCEBZ8ZF2220374";
     private CancellationToken _executionToken;
     private IReadOnlyList<EcoflowDevice> _devices = Array.Empty<EcoflowDevice>();
     private CertificationData? _certification;
@@ -270,12 +269,14 @@ public sealed class MqttSubscriberWorker : BackgroundService
             throw new InvalidOperationException($"Invalid MQTT port value '{certification.Port}'.");
         }
 
+        // TODO: make sure the client ID is unique per device/account
+        var clientId = $"Web_{_devices.FirstOrDefault()?.SerialNumber ?? "UnknownDevice"}";
+
         var builder = _mqttFactory.CreateClientOptionsBuilder()
             .WithProtocolVersion(MqttProtocolVersion.V500)
             .WithTcpServer(certification.Url, port)
-            .WithCleanStart(true)
-            .WithClientId(_clientId)
-            .WithKeepAlivePeriod(TimeSpan.FromSeconds(60))
+            .WithCleanStart(false)
+            .WithClientId(clientId)
             .WithCredentials(certification.CertificateAccount, certification.CertificatePassword)
             .WithTlsOptions(options => options.WithCertificateValidationHandler(_ => true));
 

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
 using Ecoflow.MqttIngestor.Messaging;
@@ -7,15 +8,8 @@ namespace Ecoflow.MqttIngestor.Processing;
 
 public sealed class MessageParser(ILogger<MessageParser> logger) : IMessageParser
 {
-    private static readonly Dictionary<string, string> ModuleMap = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["ems"] = "EMS",
-        ["bmsMaster"] = "BMS",
-        ["kit"] = "KIT",
-        ["pd"] = "PD",
-        ["inv"] = "INV",
-        ["mppt"] = "MPPT"
-    };
+    // Identifier used when payload combines data from several modules.
+    private const string AggregatedModuleName = "ALL";
 
     public bool TryParse(MqttEnvelope envelope, out EcoflowEvent? ecoflowEvent, out string? failureReason)
     {
@@ -32,6 +26,9 @@ public sealed class MessageParser(ILogger<MessageParser> logger) : IMessageParse
 
         string deviceId = ExtractDeviceId(envelope.Topic);
         string? module = null;
+        bool rootHasOnlyParams = true;
+        string? firstParamsProperty = null;
+        bool paramsEncountered = false;
 
         try
         {
@@ -43,9 +40,25 @@ public sealed class MessageParser(ILogger<MessageParser> logger) : IMessageParse
                 }
 
                 var propertyName = utf8Reader.GetString();
-                if (propertyName?.Equals("params", StringComparison.OrdinalIgnoreCase) == true)
+                bool isRootProperty = utf8Reader.CurrentDepth == 0;
+                bool isParams = propertyName?.Equals("params", StringComparison.OrdinalIgnoreCase) == true;
+
+                if (isRootProperty && !isParams)
                 {
-                    module = ExtractModuleFromParams(ref utf8Reader, module);
+                    rootHasOnlyParams = false;
+                }
+
+                if (isParams)
+                {
+                    if (!paramsEncountered)
+                    {
+                        firstParamsProperty ??= ExtractFirstParamsPropertyName(ref utf8Reader);
+                        paramsEncountered = true;
+                    }
+                    else
+                    {
+                        utf8Reader.Skip();
+                    }
                 }
                 else
                 {
@@ -60,6 +73,16 @@ public sealed class MessageParser(ILogger<MessageParser> logger) : IMessageParse
             return false;
         }
 
+        if (!paramsEncountered)
+        {
+            failureReason = "Unable to determine module";
+            return false;
+        }
+
+        module = rootHasOnlyParams
+            ? AggregatedModuleName
+            : TryResolveModuleName(firstParamsProperty);
+
         if (module is null)
         {
             failureReason = "Unable to determine module";
@@ -71,17 +94,15 @@ public sealed class MessageParser(ILogger<MessageParser> logger) : IMessageParse
         return true;
     }
 
-    private static string? ExtractModuleFromParams(
-        ref Utf8JsonReader reader,
-        string? currentModule)
+    private static string? ExtractFirstParamsPropertyName(ref Utf8JsonReader reader)
     {
         if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
         {
             reader.Skip();
-            return currentModule;
+            return null;
         }
 
-        string? module = currentModule;
+        string? firstProperty = null;
 
         while (reader.Read())
         {
@@ -96,33 +117,27 @@ public sealed class MessageParser(ILogger<MessageParser> logger) : IMessageParse
                 continue;
             }
 
-            var propertyName = reader.GetString();
-            if (propertyName is null)
-            {
-                reader.Skip();
-                continue;
-            }
-
-            if (module is null && propertyName.Contains('.'))
-            {
-                var separatorIndex = propertyName.IndexOf('.');
-                var moduleCandidate = propertyName[..separatorIndex];
-                module = NormalizeModuleName(moduleCandidate);
-            }
-
+            firstProperty ??= reader.GetString();
             reader.Skip();
         }
 
-        return module;
+        return firstProperty;
     }
 
-    private static string NormalizeModuleName(string candidate)
+    private static string? TryResolveModuleName(string? propertyName)
     {
-        if (ModuleMap.TryGetValue(candidate, out var mapped))
+        if (string.IsNullOrWhiteSpace(propertyName))
         {
-            return mapped;
+            return null;
         }
 
+        var separatorIndex = propertyName.IndexOf('.');
+        if (separatorIndex <= 0)
+        {
+            return null;
+        }
+
+        var candidate = propertyName[..separatorIndex];
         return candidate.ToUpperInvariant();
     }
 

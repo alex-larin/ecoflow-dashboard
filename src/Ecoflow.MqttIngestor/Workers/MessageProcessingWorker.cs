@@ -37,7 +37,10 @@ public sealed class MessageProcessingWorker : BackgroundService
 
         await foreach (var envelope in _channelReader.ReadAllAsync(stoppingToken))
         {
-            if (IsQuotaTopic(envelope.Topic))
+            var p = System.Text.Encoding.UTF8.GetString(envelope.Payload);
+            _logger.LogInformation("Received message from {Topic}: {Payload}", envelope.Topic, p);
+
+            if (!IsQuotaTopic(envelope.Topic))
             {
                 var payload = System.Text.Encoding.UTF8.GetString(envelope.Payload);
                 _logger.LogInformation("Received message from {Topic}: {Payload}", envelope.Topic, payload);
@@ -46,9 +49,8 @@ public sealed class MessageProcessingWorker : BackgroundService
 
             if (!_messageParser.TryParse(envelope, out var ecoflowEvent, out var error))
             {
-                // var payload = envelope.Payload.Length > 0 ? System.Text.Encoding.UTF8.GetString(envelope.Payload) : "<empty>";
-                // _logger.LogWarning("Discarding message from topic {Topic}: {Reason}. Payload:{Payload}", envelope.Topic, error ?? "unknown error", payload);
-                _logger.LogWarning("Discarding message from topic {Topic}: {Reason}.", envelope.Topic, error ?? "unknown error");
+                var payload = envelope.Payload.Length > 0 ? System.Text.Encoding.UTF8.GetString(envelope.Payload) : "<empty>";
+                _logger.LogWarning("Discarding message from topic {Topic}: {Reason}. Payload:{Payload}", envelope.Topic, error ?? "unknown error", payload);
                 continue;
             }
 
